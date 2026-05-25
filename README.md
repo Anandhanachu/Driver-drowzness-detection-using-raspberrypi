@@ -1,7 +1,7 @@
 # Driver Drowsiness Detection — Raspberry Pi Edition
 
 > Camera-based driver drowsiness detection that runs **entirely on a Raspberry Pi**.  
-> Detects closed eyes (EAR) and head drop (head-pose pitch) — alerts the driver through a **blinking LED** and an **active buzzer**.
+> Detects closed eyes using the **Eye Aspect Ratio (EAR)** — alerts the driver through a **blinking LED** and an **active buzzer**.
 
 ---
 
@@ -37,12 +37,10 @@ IP Camera (http://192.0.0.2:8081)
          │
          ▼
   68-point facial landmarks
-  ┌──────┴──────────────────┐
-  │ EAR (Eye Aspect Ratio)  │   eyes closed → EAR drops below threshold
-  │ Head-pose Pitch (PnP)   │   head droops → pitch exceeds threshold
-  └──────┬──────────────────┘
-         │  Both checked every frame
-         ▼
+         │
+  EAR (Eye Aspect Ratio)
+  eyes closed → EAR drops below threshold
+         │
   Timer: drowsy for > 0.7 s?
          │  YES
          ▼
@@ -53,11 +51,10 @@ IP Camera (http://192.0.0.2:8081)
   Driver wakes up → GPIO OFF
 ```
 
-**Detection methods:**
+**Detection method:**
 | Method | Description |
 |---|---|
 | EAR (Eye Aspect Ratio) | Ratio of eye height to width. Falls below threshold when eyes close. Auto-calibrated at startup. |
-| Head-pose pitch | Uses solvePnP with 6 facial landmarks to estimate how far the head has dropped forward. |
 
 ---
 
@@ -233,7 +230,6 @@ All tunable parameters are at the top of `main_raspi.py`:
 | `EAR_CLOSED_RATIO` | `0.75` | EAR threshold = baseline × this ratio |
 | `DROWSY_SECONDS` | `0.7` | How long eyes must be closed before alert |
 | `CALIBRATION_SECS` | `3` | Calibration duration at startup |
-| `HEAD_PITCH_THRESHOLD` | `20.0` | Head drop angle to trigger alert (degrees) |
 | `HEADLESS` | `True` | `True` = no display window (SSH-safe) |
 
 ---
@@ -351,11 +347,10 @@ Download the file (see [Step 5](#5-download-the-shape-predictor-file)) and place
 
 ```
 driver-drowsiness-detection/
-├── main_raspi.py                        # Main script (Raspberry Pi edition)
-├── main.py                              # Original laptop/Arduino version (reference)
-├── requirements_raspi.txt               # Python dependencies for RPi
+├── main_raspi.py                          # Main script — EAR-based, RPi GPIO output
+├── requirements_raspi.txt                 # Python dependencies for RPi
 ├── shape_predictor_68_face_landmarks.dat  # dlib model (download separately — NOT in git)
-└── README.md                            # This file
+└── README.md                             # This file
 ```
 
 > **Note:** `shape_predictor_68_face_landmarks.dat` is listed in `.gitignore` due to its large size (~100 MB). Always download it separately using the instructions above.
