@@ -1,0 +1,16 @@
+# Raspberry Pi — Python dependencies for Drowsiness Detection
+# Install with: pip install -r requirements_raspi.txt
+
+# Core computer vision
+opencv-python>=4.8.0
+
+# Face detection & landmark prediction (compiled from source on RPi — see README)
+dlib>=19.24.0
+
+# Utilities
+imutils>=0.5.4
+scipy>=1.11.0
+numpy>=1.24.0
+
+# Raspberry Pi GPIO control
+RPi.GPIO>=0.7.1
