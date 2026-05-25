@@ -73,9 +73,9 @@ EMAIL_ALERT_AFTER = 6.0     # Seconds drowsy before email is sent (no response t
 EMAIL_COOLDOWN    = 120     # Minimum seconds between successive alert emails
 
 # ── Email credentials ─────────────────────────
-SENDER_EMAIL        = "your_gmail@gmail.com"          # Gmail that sends the alert
-SENDER_APP_PASSWORD = "xxxx xxxx xxxx xxxx"           # 16-char Gmail App Password
-RECEIVER_EMAIL      = "anandhanachu785@gmail.com"      # Who receives the alert
+SENDER_EMAIL        = "anandhanachu785@gmail.com"      # Gmail that sends the alert
+SENDER_APP_PASSWORD = "xxxx xxxx xxxx xxxx"           # 16-char Gmail App Password (see README)
+RECEIVER_EMAIL      = "anandhan_ec24@ug.cusat.in"     # Who receives the alert
 DRIVER_NAME         = "Driver"                        # Name shown in email
 
 # ── GPS module (NEO-6M) ───────────────────────
