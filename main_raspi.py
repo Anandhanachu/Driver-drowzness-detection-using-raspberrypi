@@ -45,7 +45,7 @@ import dlib
 import time
 import threading
 import smtplib
-import requests
+import getpass
 import numpy as np
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -74,7 +74,7 @@ EMAIL_COOLDOWN    = 120     # Minimum seconds between successive alert emails
 
 # ── Email credentials ─────────────────────────
 SENDER_EMAIL        = "anandhanachu785@gmail.com"      # Gmail that sends the alert
-SENDER_APP_PASSWORD = "xxxx xxxx xxxx xxxx"           # 16-char Gmail App Password (see README)
+SENDER_APP_PASSWORD = "xxxx xxxx xxxx xxxx"           # Placeholder — entered at runtime
 RECEIVER_EMAIL      = "anandhan_ec24@ug.cusat.in"     # Who receives the alert
 DRIVER_NAME         = "Driver"                        # Name shown in email
 
@@ -468,6 +468,14 @@ if ear_samples:
 else:
     print(f"[Calibration] No face detected. Using default threshold: {EAR_THRESHOLD:.3f}")
 
+
+# ─────────────────────────────────────────────
+# APP PASSWORD — entered securely at runtime
+# ─────────────────────────────────────────────
+SENDER_APP_PASSWORD = getpass.getpass(
+    f"[Email] Enter Gmail App Password for {SENDER_EMAIL}: "
+)
+print("[Email] App Password received.")
 
 # ─────────────────────────────────────────────
 # STATE
