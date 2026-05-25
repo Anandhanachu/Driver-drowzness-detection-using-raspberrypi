@@ -1,12 +1,11 @@
 """
 Driver Drowsiness Detection — Raspberry Pi Edition
 ====================================================
-Uses facial landmark EAR (Eye Aspect Ratio) + head-pose pitch to detect
-driver drowsiness and alerts via:
-  • GPIO LED  (blinking on PIN_LED while drowsy)
-  • GPIO active buzzer (continuous HIGH on PIN_BUZZER while drowsy)
+Uses Eye Aspect Ratio (EAR) to detect driver drowsiness and alerts via:
+  • GPIO LED  (blinking at PIN_LED while drowsy)
+  • GPIO active buzzer (continuous HIGH at PIN_BUZZER while drowsy)
 
-Video source: IP camera stream (MJPEG)  → http://192.0.0.2:8081
+Video source: IP camera MJPEG stream → http://192.0.0.2:8081
 
 Requirements (see requirements_raspi.txt):
     pip install opencv-python dlib imutils scipy numpy RPi.GPIO
@@ -39,27 +38,13 @@ PIN_LED         = 17          # GPIO BCM pin for LED
 PIN_BUZZER      = 27          # GPIO BCM pin for active buzzer
 LED_BLINK_HZ    = 4           # LED blink frequency when drowsy (blinks per second)
 
-EAR_CLOSED_RATIO    = 0.75   # Threshold = baseline_ear * this value (calibration)
-DROWSY_SECONDS      = 0.7    # Seconds eyes must be closed to trigger alert
-ALERT_RESEND_SEC    = 5      # Re-evaluate GPIO state every N seconds while drowsy
-CALIBRATION_SECS    = 3      # Seconds to calibrate open-eye EAR at startup
-BLINK_IGNORE_SEC    = 0.15   # Fast blinks under this duration are ignored
+EAR_CLOSED_RATIO = 0.75       # EAR threshold = baseline_ear * this ratio (calibration)
+DROWSY_SECONDS   = 0.7        # Seconds eyes must stay closed before alert triggers
+ALERT_RESEND_SEC = 5          # Heartbeat: re-assert GPIO every N seconds while drowsy
+CALIBRATION_SECS = 3          # Seconds to calibrate open-eye EAR baseline at startup
 
-HEADLESS        = True        # Set False if you have a monitor connected to the RPi
-                              # True = no cv2.imshow() window (safe for SSH / no-display)
-
-# 3D model points for head pose (generic face model, millimetres)
-MODEL_POINTS = np.array([
-    (0.0,    0.0,    0.0),     # Nose tip        (landmark 30)
-    (0.0,   -330.0, -65.0),    # Chin            (landmark 8)
-    (-225.0, 170.0, -135.0),   # Left eye corner (landmark 36)
-    (225.0,  170.0, -135.0),   # Right eye corner(landmark 45)
-    (-150.0, -150.0, -125.0),  # Left mouth      (landmark 48)
-    (150.0,  -150.0, -125.0),  # Right mouth     (landmark 54)
-], dtype=np.float64)
-
-LANDMARK_IDS       = [30, 8, 36, 45, 48, 54]
-HEAD_PITCH_THRESHOLD = 20.0   # degrees: head drooping triggers alert
+HEADLESS        = True        # True  = no display window (SSH / headless RPi)
+                              # False = show video window (monitor connected)
 
 
 # ─────────────────────────────────────────────
@@ -84,12 +69,12 @@ except Exception as e:
 # ─────────────────────────────────────────────
 # LED BLINK THREAD
 # ─────────────────────────────────────────────
-_blink_event  = threading.Event()   # set = stop blinking
+_blink_event  = threading.Event()
 _blink_thread = None
 
 def _blink_worker():
     """Background thread: blink LED at LED_BLINK_HZ until _blink_event is set."""
-    period = 1.0 / (LED_BLINK_HZ * 2)  # half-period
+    period = 1.0 / (LED_BLINK_HZ * 2)     # half-period per toggle
     while not _blink_event.is_set():
         if gpio_available:
             GPIO.output(PIN_LED, GPIO.HIGH)
@@ -97,13 +82,12 @@ def _blink_worker():
         if gpio_available:
             GPIO.output(PIN_LED, GPIO.LOW)
         _blink_event.wait(timeout=period)
-    # Ensure LED is off when thread exits
     if gpio_available:
-        GPIO.output(PIN_LED, GPIO.LOW)
+        GPIO.output(PIN_LED, GPIO.LOW)      # ensure LED off on exit
 
 
 def gpio_alert_on():
-    """Activate drowsiness alert: start LED blinking + buzzer ON."""
+    """Activate drowsiness alert: start LED blinking + turn buzzer ON."""
     global _blink_thread
     if _blink_thread is None or not _blink_thread.is_alive():
         _blink_event.clear()
@@ -115,8 +99,8 @@ def gpio_alert_on():
 
 
 def gpio_alert_off():
-    """Deactivate alert: stop LED blinking + buzzer OFF."""
-    _blink_event.set()               # signal blink thread to stop
+    """Deactivate alert: stop LED blinking + turn buzzer OFF."""
+    _blink_event.set()
     if gpio_available:
         GPIO.output(PIN_LED,    GPIO.LOW)
         GPIO.output(PIN_BUZZER, GPIO.LOW)
@@ -124,7 +108,7 @@ def gpio_alert_off():
 
 
 def gpio_cleanup():
-    """Clean up GPIO on exit."""
+    """Clean up GPIO pins on exit."""
     _blink_event.set()
     if gpio_available:
         GPIO.output(PIN_LED,    GPIO.LOW)
@@ -137,7 +121,7 @@ def gpio_cleanup():
 # HELPERS
 # ─────────────────────────────────────────────
 def eye_aspect_ratio(eye: np.ndarray) -> float:
-    """Compute Eye Aspect Ratio (EAR) from 6 eye landmarks."""
+    """Compute Eye Aspect Ratio (EAR) from 6 eye landmark points."""
     if len(eye) < 6:
         return 0.0
     A = distance.euclidean(eye[1], eye[5])
@@ -146,48 +130,13 @@ def eye_aspect_ratio(eye: np.ndarray) -> float:
     return (A + B) / (2.0 * C)
 
 
-def get_head_pitch(shape: np.ndarray, frame_w: int, frame_h: int) -> float | None:
-    """
-    Estimate head pitch (up/down tilt) using solvePnP.
-    Returns pitch in degrees, or None if estimation fails.
-    Negative pitch = head drooping forward (drowsy posture).
-    """
-    image_points = np.array(
-        [shape[i] for i in LANDMARK_IDS], dtype=np.float64
-    )
-    focal_length  = frame_w
-    center        = (frame_w / 2, frame_h / 2)
-    camera_matrix = np.array([
-        [focal_length, 0,            center[0]],
-        [0,            focal_length, center[1]],
-        [0,            0,            1         ]
-    ], dtype=np.float64)
-    dist_coeffs = np.zeros((4, 1))
-
-    success, rotation_vec, _ = cv2.solvePnP(
-        MODEL_POINTS, image_points, camera_matrix, dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE
-    )
-    if not success:
-        return None
-
-    rot_mat, _ = cv2.Rodrigues(rotation_vec)
-    sy       = np.sqrt(rot_mat[0, 0] ** 2 + rot_mat[1, 0] ** 2)
-    singular = sy < 1e-6
-    if not singular:
-        pitch = np.degrees(np.arctan2(-rot_mat[2, 0], sy))
-    else:
-        pitch = np.degrees(np.arctan2(-rot_mat[1, 2], rot_mat[1, 1]))
-    return pitch
-
-
 def draw_text(frame, text, pos, color, scale=0.8, thickness=2):
     """Draw text with a dark shadow for readability."""
     x, y = pos
     cv2.putText(frame, text, (x + 1, y + 1),
                 cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness + 1, cv2.LINE_AA)
     cv2.putText(frame, text, pos,
-                cv2.FONT_HERSHEY_SIMPLEX, scale, color,    thickness,     cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
 
 
 def draw_eye_contour(frame, eye, color):
@@ -196,7 +145,7 @@ def draw_eye_contour(frame, eye, color):
 
 
 def show_frame(frame):
-    """Show frame only if not running headless."""
+    """Display frame only when not running headless."""
     if not HEADLESS:
         cv2.imshow("Drowsiness Detection [RPi]", frame)
 
@@ -218,9 +167,8 @@ print("[dlib] Ready.")
 # ─────────────────────────────────────────────
 print(f"[Camera] Connecting to IP stream: {CAMERA_URL}")
 cap = cv2.VideoCapture(CAMERA_URL)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # minimise latency
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)    # minimise latency
 
-# Retry loop — IP camera may take a moment to respond
 for attempt in range(10):
     if cap.isOpened():
         break
@@ -248,7 +196,7 @@ print(f"[Camera] Stream open — resolution: {frame_w}x{frame_h}")
 print(f"[Calibration] Keep eyes open for {CALIBRATION_SECS} seconds...")
 ear_samples   = []
 calib_start   = time.time()
-EAR_THRESHOLD = 0.22           # safe fallback default
+EAR_THRESHOLD = 0.22            # fallback if no face detected during calibration
 
 while time.time() - calib_start < CALIBRATION_SECS:
     ret, frame = cap.read()
@@ -290,9 +238,8 @@ else:
 # STATE VARIABLES
 # ─────────────────────────────────────────────
 sleep_state       = False     # True while drowsy alert is active
-eyes_closed_since = None      # Timestamp when eyes first closed / head dropped
-last_alert_ts     = 0.0       # Timestamp of last GPIO re-evaluation
-alert_reason      = ""        # "EAR" or "HEAD"
+eyes_closed_since = None      # Timestamp when eyes first closed
+last_alert_ts     = 0.0       # Timestamp of last GPIO heartbeat
 
 # FPS tracking
 fps_counter = 0
@@ -311,7 +258,7 @@ try:
         if not ret or frame is None:
             print("[Camera] Frame read failed. Retrying...")
             time.sleep(0.1)
-            cap.open(CAMERA_URL)        # attempt reconnect
+            cap.open(CAMERA_URL)
             continue
 
         gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -326,7 +273,6 @@ try:
 
         now        = time.time()
         ear        = 0.0
-        pitch      = None
         face_found = len(faces) > 0
 
         # ── NO FACE DETECTED ─────────────────────────
@@ -334,8 +280,7 @@ try:
             eyes_closed_since = None
             if sleep_state:
                 gpio_alert_off()
-                sleep_state  = False
-                alert_reason = ""
+                sleep_state = False
                 print("[Alert] Face lost — alert cleared.")
             draw_text(frame, "NO FACE DETECTED", (30, 50), (0, 165, 255))
 
@@ -346,13 +291,9 @@ try:
 
             leftEye  = shape_np[lStart:lEnd]
             rightEye = shape_np[rStart:rEnd]
-            leftEAR  = eye_aspect_ratio(leftEye)
-            rightEAR = eye_aspect_ratio(rightEye)
-            ear      = (leftEAR + rightEAR) / 2.0
+            ear      = (eye_aspect_ratio(leftEye) + eye_aspect_ratio(rightEye)) / 2.0
 
-            pitch = get_head_pitch(shape_np, frame_w, frame_h)
-
-            # Draw eye contours (green=open, orange=closed)
+            # Draw eye contours — green when open, orange when closed
             eye_color = (0, 255, 0) if ear >= EAR_THRESHOLD else (0, 140, 255)
             draw_eye_contour(frame, leftEye,  eye_color)
             draw_eye_contour(frame, rightEye, eye_color)
@@ -361,10 +302,8 @@ try:
             x1, y1, x2, y2 = face.left(), face.top(), face.right(), face.bottom()
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 100, 255), 1)
 
-            # ── DROWSINESS LOGIC ─────────────────────
-            ear_drowsy  = ear < EAR_THRESHOLD
-            head_drowsy = (pitch is not None) and (pitch < -HEAD_PITCH_THRESHOLD)
-            is_drowsy   = ear_drowsy or head_drowsy
+            # ── DROWSINESS LOGIC (EAR only) ──────────
+            is_drowsy = ear < EAR_THRESHOLD
 
             if is_drowsy:
                 if eyes_closed_since is None:
@@ -376,15 +315,13 @@ try:
                         gpio_alert_on()
                         last_alert_ts = now
                         sleep_state   = True
-                        alert_reason  = "EAR" if ear_drowsy else "HEAD"
-                        print(f"[Alert] DROWSY ({alert_reason}) triggered.")
+                        print("[Alert] DROWSY — triggered.")
                     elif now - last_alert_ts >= ALERT_RESEND_SEC:
-                        # Ensure GPIO is still active (heartbeat)
-                        gpio_alert_on()
+                        gpio_alert_on()              # heartbeat: keep GPIO active
                         last_alert_ts = now
-                        print(f"[Alert] DROWSY ({alert_reason}) heartbeat.")
+                        print("[Alert] DROWSY — heartbeat.")
                 else:
-                    # Progress bar: eyes closing but timer not yet elapsed
+                    # Progress bar while timer counts up
                     bar_w   = int((elapsed / DROWSY_SECONDS) * 200)
                     bar_col = (
                         0,
@@ -400,25 +337,22 @@ try:
                 if sleep_state:
                     gpio_alert_off()
                     print("[Alert] AWAKE — alert cleared.")
-                    sleep_state  = False
-                    alert_reason = ""
+                    sleep_state = False
 
             break   # process only the first / largest face
 
         # ── HUD OVERLAY ──────────────────────────────
         if sleep_state:
-            reason_str = f"DROWSY ({alert_reason})"
             cv2.rectangle(frame, (0, 0), (frame_w, 70), (0, 0, 180), -1)
-            draw_text(frame, reason_str, (30, 48), (255, 255, 255), scale=1.1, thickness=3)
+            draw_text(frame, "DROWSY!", (30, 48), (255, 255, 255), scale=1.1, thickness=3)
         elif face_found:
             cv2.rectangle(frame, (0, 0), (frame_w, 70), (0, 120, 0), -1)
             draw_text(frame, "AWAKE", (30, 48), (255, 255, 255), scale=1.1, thickness=3)
 
         if face_found:
             stats = [
-                f"EAR   : {ear:.3f}  (thresh {EAR_THRESHOLD:.3f})",
-                f"Pitch : {pitch:.1f} deg" if pitch is not None else "Pitch : N/A",
-                f"FPS   : {fps_display:.1f}",
+                f"EAR : {ear:.3f}  (thresh {EAR_THRESHOLD:.3f})",
+                f"FPS : {fps_display:.1f}",
             ]
             panel_y = 85
             for line in stats:
@@ -438,7 +372,6 @@ except KeyboardInterrupt:
     print("\n[System] KeyboardInterrupt — shutting down...")
 
 finally:
-    # ── CLEANUP ──────────────────────────────────
     print("[System] Shutting down...")
     if sleep_state:
         gpio_alert_off()
