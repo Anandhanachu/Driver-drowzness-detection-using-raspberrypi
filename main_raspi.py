@@ -3,11 +3,9 @@ Driver Drowsiness Detection — Raspberry Pi Edition
 ====================================================
 Detects driver drowsiness using Eye Aspect Ratio (EAR) from an IP camera.
 
-Output:
-  • GPIO 17 → LED blinks (4 Hz) while drowsy
-  • GPIO 27 → Active buzzer ON while drowsy
-
-No display window — output is ONLY via GPIO (LED + Buzzer).
+Output (GPIO only — no display window):
+  • GPIO 17 → LED blinks (4 Hz) while drowsy        [gpiozero LED]
+  • GPIO 27 → Passive buzzer sounds while drowsy     [gpiozero PWMOutputDevice]
 
 Video source: IP camera MJPEG stream → http://192.0.0.2:8081
 
@@ -19,9 +17,9 @@ Download shape predictor (run once):
     bunzip2 shape_predictor_68_face_landmarks.dat.bz2
 
 Hardware wiring:
-    LED  (+resistor 220Ω) → GPIO 17  (Physical Pin 11)
-    Active Buzzer         → GPIO 27  (Physical Pin 13)
-    Both GND              → GND      (Physical Pin 6 or 9)
+    LED   (+resistor 220Ω) → GPIO 17  (Physical Pin 11)
+    Passive Buzzer (+)     → GPIO 27  (Physical Pin 13)
+    Both GND               → GND      (Physical Pin 6 or 9)
 """
 
 import cv2
@@ -35,32 +33,37 @@ from imutils import face_utils
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-CAMERA_URL       = "http://192.0.0.2:8081"              # IP camera MJPEG stream
+CAMERA_URL       = "http://192.0.0.2:8081"               # IP camera MJPEG stream
 PREDICTOR_PATH   = "shape_predictor_68_face_landmarks.dat"
 
 PIN_LED          = 17       # GPIO BCM pin → LED
-PIN_BUZZER       = 27       # GPIO BCM pin → Active Buzzer
+PIN_BUZZER       = 27       # GPIO BCM pin → Passive Buzzer (PWM)
 LED_BLINK_HZ     = 4        # LED blink rate when drowsy (Hz)
+BUZZER_FREQ      = 1000     # Buzzer tone frequency in Hz (1 kHz)
+BUZZER_DUTY      = 0.5      # Duty cycle 0.0–1.0  (0.5 = 50%, loudest for passive buzzer)
 
 EAR_CLOSED_RATIO = 0.75     # EAR threshold = baseline_ear × this ratio
-DROWSY_SECONDS   = 0.7      # Eyes must be closed for this long before alert fires
+DROWSY_SECONDS   = 0.7      # Eyes must be closed this long before alert fires
 ALERT_RESEND_SEC = 5        # Heartbeat: re-assert GPIO every N seconds while drowsy
-CALIBRATION_SECS = 3        # Seconds to sample open-eye EAR at startup
+CALIBRATION_SECS = 3        # Seconds to sample open-eye EAR baseline at startup
 
 
 # ─────────────────────────────────────────────
-# GPIO SETUP
+# GPIO SETUP  (gpiozero)
 # ─────────────────────────────────────────────
 try:
-    import RPi.GPIO as GPIO
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
-    GPIO.setup(PIN_LED,    GPIO.OUT, initial=GPIO.LOW)
-    GPIO.setup(PIN_BUZZER, GPIO.OUT, initial=GPIO.LOW)
+    from gpiozero import LED as GpioLED, PWMOutputDevice
+    from signal import pause
+
+    led    = GpioLED(PIN_LED)
+    buzzer = PWMOutputDevice(PIN_BUZZER, frequency=BUZZER_FREQ)
+    buzzer.value = 0          # start silent
+
     gpio_available = True
-    print(f"[GPIO] Initialised — LED=GPIO{PIN_LED}, BUZZER=GPIO{PIN_BUZZER}")
+    print(f"[GPIO] Initialised — LED=GPIO{PIN_LED}, Buzzer=GPIO{PIN_BUZZER} (PWM {BUZZER_FREQ} Hz)")
+
 except ImportError:
-    print("[GPIO] WARNING: RPi.GPIO not installed. Running without GPIO output.")
+    print("[GPIO] WARNING: gpiozero not installed. Running without GPIO output.")
     gpio_available = False
 except Exception as e:
     print(f"[GPIO] WARNING: GPIO setup failed: {e}. Running without GPIO output.")
@@ -68,53 +71,31 @@ except Exception as e:
 
 
 # ─────────────────────────────────────────────
-# LED BLINK THREAD
+# GPIO HELPERS
 # ─────────────────────────────────────────────
-_blink_event  = threading.Event()
-_blink_thread = None
-
-def _blink_worker():
-    """Background thread: blink LED at LED_BLINK_HZ until _blink_event is set."""
-    half_period = 1.0 / (LED_BLINK_HZ * 2)
-    while not _blink_event.is_set():
-        if gpio_available:
-            GPIO.output(PIN_LED, GPIO.HIGH)
-        _blink_event.wait(timeout=half_period)
-        if gpio_available:
-            GPIO.output(PIN_LED, GPIO.LOW)
-        _blink_event.wait(timeout=half_period)
-    if gpio_available:
-        GPIO.output(PIN_LED, GPIO.LOW)     # ensure off on thread exit
-
-
 def gpio_alert_on():
-    """Activate alert: start LED blink thread + turn buzzer ON."""
-    global _blink_thread
-    if _blink_thread is None or not _blink_thread.is_alive():
-        _blink_event.clear()
-        _blink_thread = threading.Thread(target=_blink_worker, daemon=True)
-        _blink_thread.start()
+    """Start LED blinking + passive buzzer tone."""
     if gpio_available:
-        GPIO.output(PIN_BUZZER, GPIO.HIGH)
-    print("[GPIO] ALERT ON  — LED blinking, Buzzer HIGH")
+        led.blink(on_time=1/LED_BLINK_HZ, off_time=1/LED_BLINK_HZ)  # 4 Hz blink
+        buzzer.value = BUZZER_DUTY                                    # PWM → buzzer sounds
+    print("[GPIO] ALERT ON  — LED blinking, Buzzer sounding")
 
 
 def gpio_alert_off():
-    """Deactivate alert: stop LED + turn buzzer OFF."""
-    _blink_event.set()
+    """Stop LED + silence passive buzzer."""
     if gpio_available:
-        GPIO.output(PIN_LED,    GPIO.LOW)
-        GPIO.output(PIN_BUZZER, GPIO.LOW)
-    print("[GPIO] ALERT OFF — LED off, Buzzer LOW")
+        led.off()
+        buzzer.value = 0      # duty cycle 0 → buzzer silent
+    print("[GPIO] ALERT OFF — LED off, Buzzer silent")
 
 
 def gpio_cleanup():
-    """Safe GPIO cleanup on exit."""
-    _blink_event.set()
+    """Turn off all GPIO devices on exit."""
     if gpio_available:
-        GPIO.output(PIN_LED,    GPIO.LOW)
-        GPIO.output(PIN_BUZZER, GPIO.LOW)
-        GPIO.cleanup()
+        led.off()
+        buzzer.value = 0
+        buzzer.close()
+        led.close()
     print("[GPIO] Cleanup done.")
 
 
@@ -148,7 +129,7 @@ print("[dlib] Ready.")
 # ─────────────────────────────────────────────
 print(f"[Camera] Connecting to: {CAMERA_URL}")
 cap = cv2.VideoCapture(CAMERA_URL)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)    # keep buffer small to minimise latency
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)    # keep buffer minimal to reduce latency
 
 for attempt in range(10):
     if cap.isOpened():
@@ -177,7 +158,7 @@ print(f"[Camera] Stream open — {frame_w}x{frame_h}")
 print(f"[Calibration] Keep your eyes OPEN for {CALIBRATION_SECS} seconds...")
 ear_samples   = []
 calib_start   = time.time()
-EAR_THRESHOLD = 0.22           # safe fallback if no face detected
+EAR_THRESHOLD = 0.22            # safe fallback if no face detected during calibration
 
 while time.time() - calib_start < CALIBRATION_SECS:
     ret, frame = cap.read()
@@ -186,8 +167,7 @@ while time.time() - calib_start < CALIBRATION_SECS:
     gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = detector(gray, 0)
     for face in faces:
-        shape    = predictor(gray, face)
-        shape_np = face_utils.shape_to_np(shape)
+        shape_np = face_utils.shape_to_np(predictor(gray, face))
         ear = (eye_aspect_ratio(shape_np[lStart:lEnd]) +
                eye_aspect_ratio(shape_np[rStart:rEnd])) / 2.0
         ear_samples.append(ear)
@@ -208,7 +188,7 @@ sleep_state       = False
 eyes_closed_since = None
 last_alert_ts     = 0.0
 
-print("[System] Running. Output: LED (GPIO 17) + Buzzer (GPIO 27). Ctrl+C to quit.\n")
+print("[System] Running. Output: LED (GPIO 17) + Buzzer (GPIO 27 PWM). Ctrl+C to quit.\n")
 
 
 # ─────────────────────────────────────────────

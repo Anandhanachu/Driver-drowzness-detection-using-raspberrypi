@@ -12,5 +12,6 @@ imutils>=0.5.4
 scipy>=1.11.0
 numpy>=1.24.0
 
-# Raspberry Pi GPIO control
-RPi.GPIO>=0.7.1
+# Raspberry Pi GPIO (gpiozero is pre-installed on RPi OS, listed here for completeness)
+# PWMOutputDevice is used for the passive buzzer; LED class handles the LED
+gpiozero>=2.0
