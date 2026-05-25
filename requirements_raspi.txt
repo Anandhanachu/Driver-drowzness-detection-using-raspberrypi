@@ -12,6 +12,12 @@ imutils>=0.5.4
 scipy>=1.11.0
 numpy>=1.24.0
 
-# Raspberry Pi GPIO (gpiozero is pre-installed on RPi OS, listed here for completeness)
-# PWMOutputDevice is used for the passive buzzer; LED class handles the LED
+# HTTP requests (for IP-based geolocation fallback)
+requests>=2.31.0
+
+# Serial communication for NEO-6M GPS module
+pyserial>=3.5
+
+# Raspberry Pi GPIO (gpiozero is pre-installed on RPi OS)
+# PWMOutputDevice → passive buzzer | LED → blink control
 gpiozero>=2.0
