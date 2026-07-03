@@ -21,3 +21,8 @@ pyserial>=3.5
 # Raspberry Pi GPIO (gpiozero is pre-installed on RPi OS)
 # PWMOutputDevice → passive buzzer | LED → blink control
 gpiozero>=2.0
+
+# Pi Camera Module (pre-installed on Raspberry Pi OS Bookworm)
+# Used for libcamera-based Pi Camera capture (Pi Camera Module 2/3)
+# If not installed: sudo apt install -y python3-picamera2
+picamera2>=0.3.12

@@ -17,7 +17,7 @@ Location:
   Primary  → NEO-6M GPS module on GPS_PORT (exact coordinates)
   Fallback → ip-api.com (approximate city-level, no API key needed)
 
-Video source: IP camera MJPEG stream → http://192.0.0.2:8081
+Video source: Pi Camera (local — cv2.VideoCapture(0))
 
 Requirements:
     pip install -r requirements_raspi.txt
@@ -54,9 +54,20 @@ from scipy.spatial import distance
 from imutils import face_utils
 
 # ─────────────────────────────────────────────
+# PICAMERA2 SETUP (with cv2 fallback)
+# ─────────────────────────────────────────────
+try:
+    from picamera2 import Picamera2
+    PICAM2_AVAILABLE = True
+    print("[Camera] picamera2 found — will use Pi Camera via libcamera.")
+except ImportError:
+    PICAM2_AVAILABLE = False
+    print("[Camera] picamera2 not found — falling back to cv2.VideoCapture(0).")
+
+# ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-CAMERA_URL       = "http://192.0.0.2:8081"               # IP camera MJPEG stream
+CAMERA_URL       = 0               # Used only if picamera2 is unavailable (fallback)
 PREDICTOR_PATH   = "shape_predictor_68_face_landmarks.dat"
 
 PIN_LED          = 17       # GPIO BCM pin → LED
@@ -413,31 +424,45 @@ _start_gps()
 
 
 # ─────────────────────────────────────────────
-# IP CAMERA SETUP
+# PI CAMERA SETUP
 # ─────────────────────────────────────────────
-print(f"[Camera] Connecting to: {CAMERA_URL}")
-cap = cv2.VideoCapture(CAMERA_URL)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-for attempt in range(10):
-    if cap.isOpened():
-        break
-    print(f"[Camera] Waiting for stream... attempt {attempt + 1}/10")
-    time.sleep(2)
-    cap.open(CAMERA_URL)
-
-if not cap.isOpened():
-    raise RuntimeError(
-        f"Cannot connect to IP camera at {CAMERA_URL}.\n"
-        "Ensure the camera is on the same network and the URL is correct."
+if PICAM2_AVAILABLE:
+    print("[Camera] Starting Pi Camera via picamera2...")
+    picam2 = Picamera2()
+    config  = picam2.create_preview_configuration(
+        main={"format": "BGR888", "size": (640, 480)}
     )
+    picam2.configure(config)
+    picam2.start()
+    time.sleep(1)  # Let camera warm up
+    cap = None
 
-ret, test_frame = cap.read()
+    def read_frame():
+        frame = picam2.capture_array()
+        return True, frame
+
+else:
+    print("[Camera] Starting cv2.VideoCapture(0) fallback...")
+    picam2 = None
+    cap = cv2.VideoCapture(CAMERA_URL)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    if not cap.isOpened():
+        raise RuntimeError(
+            "Cannot open camera via cv2.VideoCapture(0).\n"
+            "Ensure the Pi Camera is connected and enabled via 'sudo raspi-config'."
+        )
+
+    def read_frame():
+        return cap.read()
+
+# Test frame
+ret, test_frame = read_frame()
 if not ret or test_frame is None:
-    raise RuntimeError("Stream opened but cannot read frame. Check camera format.")
+    raise RuntimeError("Cannot read frame from camera. Check camera connection.")
 
 frame_h, frame_w = test_frame.shape[:2]
-print(f"[Camera] Stream open — {frame_w}x{frame_h}")
+print(f"[Camera] Ready — {frame_w}x{frame_h}")
 
 
 # ─────────────────────────────────────────────
@@ -449,7 +474,7 @@ calib_start   = time.time()
 EAR_THRESHOLD = 0.22
 
 while time.time() - calib_start < CALIBRATION_SECS:
-    ret, frame = cap.read()
+    ret, frame = read_frame()
     if not ret or frame is None:
         continue
     gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -500,11 +525,10 @@ print(
 # ─────────────────────────────────────────────
 try:
     while True:
-        ret, frame = cap.read()
+        ret, frame = read_frame()
         if not ret or frame is None:
             print("[Camera] Frame read failed — retrying...")
             time.sleep(0.1)
-            cap.open(CAMERA_URL)
             continue
 
         gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -519,6 +543,10 @@ try:
                 sleep_state = False
                 email_sent  = False
                 print("[Alert] Face lost — alert cleared.")
+            
+            cv2.imshow("Drowsiness Detection", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
             continue
 
         # ── FIRST FACE ───────────────────────────────
@@ -564,6 +592,21 @@ try:
             else:
                 eyes_closed_since = None
 
+        # ── DISPLAY ──────────────────────────────────
+        for (x, y) in shape_np:
+            cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+        
+        # Display EAR value on the frame
+        color = (0, 255, 0) if ear >= EAR_THRESHOLD else (0, 0, 255)
+        cv2.putText(frame, f"EAR: {ear:.3f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        
+        if sleep_state:
+            cv2.putText(frame, "DROWSY ALERT!", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            
+        cv2.imshow("Drowsiness Detection", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
 except KeyboardInterrupt:
     print("\n[System] Stopped by user.")
 
@@ -571,5 +614,11 @@ finally:
     if sleep_state:
         gpio_alert_off()
     gpio_cleanup()
-    cap.release()
+    if picam2:
+        picam2.stop()
+        picam2.close()
+        print("[Camera] picamera2 stopped.")
+    elif cap:
+        cap.release()
+    cv2.destroyAllWindows()
     print("[System] Done.")
